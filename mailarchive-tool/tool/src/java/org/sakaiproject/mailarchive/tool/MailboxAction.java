@@ -87,6 +87,8 @@ public class MailboxAction extends PagedResourceActionII
 	private static final String FORM_PAGESIZE = "pagesize";
 
 	private static final String FORM_OPEN = "open";
+	
+	private static final String FORM_REPLY = "reply";
 
 	private static final String FORM_ALIAS = "alias";
 
@@ -105,6 +107,8 @@ public class MailboxAction extends PagedResourceActionII
 	private static final String STATE_OPTION_PAGESIZE = "optSize";
 
 	private static final String STATE_OPTION_OPEN = "optOpen";
+	
+	private static final String STATE_OPTION_REPLY = "optReply";
 
 	private static final String STATE_OPTION_ALIAS = "optAlias";
 	
@@ -997,6 +1001,7 @@ public class MailboxAction extends PagedResourceActionII
 		// provide form names
 		context.put("form-pagesize", FORM_PAGESIZE);
 		context.put("form-open", FORM_OPEN);
+		context.put("form-reply", FORM_REPLY);
 		context.put("form-alias", FORM_ALIAS);
 		context.put("form-submit", BUTTON + "doUpdate");
 		context.put("form-cancel", BUTTON + "doCancel");
@@ -1004,7 +1009,10 @@ public class MailboxAction extends PagedResourceActionII
 		// in progress values
 		if (state.getAttribute(STATE_OPTION_PAGESIZE) != null)
 			context.put(STATE_OPTION_PAGESIZE, state.getAttribute(STATE_OPTION_PAGESIZE));
-		if (state.getAttribute(STATE_OPTION_OPEN) != null) context.put(STATE_OPTION_OPEN, state.getAttribute(STATE_OPTION_OPEN));
+		if (state.getAttribute(STATE_OPTION_OPEN) != null)
+			context.put(STATE_OPTION_OPEN, state.getAttribute(STATE_OPTION_OPEN));
+		if (state.getAttribute(STATE_OPTION_REPLY) != null)
+			context.put(STATE_OPTION_REPLY, state.getAttribute(STATE_OPTION_REPLY));
 		if (state.getAttribute(STATE_OPTION_ALIAS) != null)
 			context.put(STATE_OPTION_ALIAS, state.getAttribute(STATE_OPTION_ALIAS));
 
@@ -1044,6 +1052,8 @@ public class MailboxAction extends PagedResourceActionII
 		// state.setAttribute(STATE_OPTION_PAGESIZE, pagesize);
 		String open = data.getParameters().getString(FORM_OPEN);
 		state.setAttribute(STATE_OPTION_OPEN, open);
+		String replyToList = data.getParameters().getString(FORM_REPLY);
+		state.setAttribute(STATE_OPTION_REPLY, replyToList);
 		String alias = StringUtil.trimToNull(data.getParameters().getString(FORM_ALIAS));
 		state.setAttribute(STATE_OPTION_ALIAS, alias);
 
@@ -1154,11 +1164,24 @@ public class MailboxAction extends PagedResourceActionII
 			// if the alias saving went well, go on to the rest
 			if (state.getAttribute(STATE_MESSAGE) == null)
 			{
+				boolean modified = false;
 				// update the channel for open (if changed)
 				boolean ss = new Boolean(open).booleanValue();
 				if (channel.getOpen() != ss)
 				{
 					edit.setOpen(ss);
+					modified = true;
+				}
+				
+				ss = new Boolean(replyToList).booleanValue();
+				if (channel.getReplyToList() != ss)
+				{
+					edit.setReplyToList(ss);
+					modified = true;
+				}
+				
+				if (modified)
+				{
 					MailArchiveService.commitChannel(edit);
 				}
 				else
@@ -1188,6 +1211,7 @@ public class MailboxAction extends PagedResourceActionII
 				// clear state temps.
 				state.removeAttribute(STATE_OPTION_PAGESIZE);
 				state.removeAttribute(STATE_OPTION_OPEN);
+				state.removeAttribute(STATE_OPTION_REPLY);
 				state.removeAttribute(STATE_OPTION_ALIAS);
 
 				// re-enable auto-updates when going back to list mode
@@ -1222,6 +1246,7 @@ public class MailboxAction extends PagedResourceActionII
 		// clear state temps.
 		state.removeAttribute(STATE_OPTION_PAGESIZE);
 		state.removeAttribute(STATE_OPTION_OPEN);
+		state.removeAttribute(STATE_OPTION_REPLY);
 		state.removeAttribute(STATE_OPTION_ALIAS);
 
 		// re-enable auto-updates when going back to list mode

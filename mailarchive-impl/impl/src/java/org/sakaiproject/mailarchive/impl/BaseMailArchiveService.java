@@ -930,6 +930,40 @@ public abstract class BaseMailArchiveService extends BaseMessageService implemen
 
 		}
 
+		/*
+		 * (non-Javadoc)
+		 * @see org.sakaiproject.mailarchive.api.MailArchiveChannelEdit#setReplyToList(boolean)
+		 */
+		public void setReplyToList(boolean replyToList)
+		{
+			if (replyToList)
+			{
+				getPropertiesEdit().addProperty(ResourceProperties.PROP_MAIL_CHANNEL_REPLY_LIST, "true");
+			}
+			else
+			{
+				getPropertiesEdit().removeProperty(ResourceProperties.PROP_MAIL_CHANNEL_REPLY_LIST);
+			}			
+		}
+
+		/*
+		 * (non-Javadoc)
+		 * @see org.sakaiproject.mailarchive.api.MailArchiveChannel#getReplyToList()
+		 */
+		public boolean getReplyToList()
+		{
+			boolean open = false;
+			try
+			{
+				open = getProperties().getBooleanProperty(ResourceProperties.PROP_MAIL_CHANNEL_REPLY_LIST);
+			}
+			catch (Exception ignore)
+			{
+			}
+
+			return open;
+		}
+
 	} // class BaseMailArchiveChannelEdit
 
 	/**********************************************************************************************************************************************************************************************************************************************************

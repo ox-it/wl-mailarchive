@@ -189,8 +189,7 @@ public class SakaiMailet extends GenericMailet
 				mailHeaders.add(line);
 			}
 
-			M_log.debug(id + " : mail: from:" + from + " sent: " + TimeService.newTime(sent.getTime()).toStringLocalFull() + " subject: "
-					+ subject);
+			M_log.debug(id + " : mail: from:" + from + " sent: " + TimeService.newTime(sent.getTime()).toStringLocalFull() + " subject: "+ subject);
 
 			// process for each recipient
 			Iterator it = to.iterator();
@@ -332,9 +331,30 @@ public class SakaiMailet extends GenericMailet
 					String body[] = new String[2];
 					body[0] = bodyBuf[0].toString(); // plain/text
 					body[1] = bodyBuf[1].toString(); // html/text
-					
-					channel.addMailArchiveMessage(subject, from.toString(), TimeService.newTime(sent.getTime()), 
-															mailHeaders, attachments, body);
+ 					
+					if (channel.getReplyToList())
+					{
+						List modifiedHeaders = new Vector();
+						for (String header: (List<String>)mailHeaders) 
+						{
+							if (header != null && !header.startsWith("Reply-To:"))
+							{
+								modifiedHeaders.add(header);
+							}
+						}
+						M_log.debug("Set Reply-To address to "+ recipient.toString());
+						modifiedHeaders.add("Reply-To: "+ recipient.toString());
+
+						// post the message to the group's channel
+						channel.addMailArchiveMessage(subject, from.toString(), TimeService.newTime(sent.getTime()), modifiedHeaders,
+								attachments, body);
+					}
+					else
+					{
+						// post the message to the group's channel
+						channel.addMailArchiveMessage(subject, from.toString(), TimeService.newTime(sent.getTime()), mailHeaders,
+								attachments, body);
+					}
 															
 					M_log.debug(id + " : delivered to:" + mailId);
 
