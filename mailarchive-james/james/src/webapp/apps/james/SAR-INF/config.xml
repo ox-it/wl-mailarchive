@@ -314,10 +314,8 @@
             <!-- If your gateway mail server is listening on a port other than 25, -->
             <!-- you can set James to connect to it on that port using the gatewayPort -->
             <!-- element. -->
-            <!--
-            <gateway> otherserver.mydomain.com </gateway>
+            <gateway>localhost</gateway>
             <gatewayPort>25</gatewayPort>
-            -->
          </mailet>
 
       </processor>
