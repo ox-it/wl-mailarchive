@@ -52,6 +52,8 @@
 
 <!-- CHANGED: from >localhost< -->
          <servername>[HOST]</servername>
+         <!-- Added as sakai doesn't support getting this from config. -->
+         <servername>sakai.oucs.ox.ac.uk</servername>
          <servername>myhost.james</servername>
 
       </servernames>
