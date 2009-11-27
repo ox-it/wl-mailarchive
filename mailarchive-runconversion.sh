@@ -48,7 +48,7 @@ usage:
       properties
              the configuration file
 eg
-    `basename $0` -j $CATALINA_HOME/shared/lib/ojdbc14.jar -k 1.0.3 -s 2.6.0 -m /tmp/m2/repository convertcontent.config
+    `basename $0` -j $CATALINA_HOME/shared/lib/ojdbc14.jar -k 1.0.12 -s 2.6.1 -m /tmp/m2/repository convertcontent.config
 USAGE
 }
 
