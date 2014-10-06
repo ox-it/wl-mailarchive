@@ -665,37 +665,6 @@ public class SakaiMailet extends GenericMailet
 		}
 	}
 
-	/**
-	 * Read in a stream from the mime body into a byte array
-	 */
-	protected byte[] readBody(int approxSize, InputStream stream)
-	{
-		// the size is APPROXIMATE, and is sometimes wrong -
-		// so read the body into a ByteArrayOutputStream
-		// that will grow if necessary
-		if (approxSize <= 0) return null;
-
-		ByteArrayOutputStream baos = new ByteArrayOutputStream(approxSize);
-		byte[] buff = new byte[10000];
-		try
-		{
-			//int lenRead = 0;
-			int count = 0;
-			while (count >= 0)
-			{
-				count = stream.read(buff, 0, buff.length);
-				if (count <= 0) break;
-				baos.write(buff, 0, count);
-				//lenRead += count;
-			}
-		}
-		catch (IOException e)
-		{
-			M_log.warn("readBody(): " + e);
-		}
-
-		return baos.toByteArray();
-	}
 
 	/**
 	 * Breaks email messages into parts which can be saved as files (saves as attachments) or viewed as plain text (added to body of message).
