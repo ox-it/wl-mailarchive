@@ -14,6 +14,7 @@ import org.sakaiproject.entity.api.ResourceProperties;
 import org.sakaiproject.entity.api.ResourcePropertiesEdit;
 import org.sakaiproject.exception.IdUnusedException;
 import org.sakaiproject.exception.PermissionException;
+import org.sakaiproject.i18n.InternationalizedMessages;
 import org.sakaiproject.mailarchive.api.MailArchiveChannel;
 import org.sakaiproject.mailarchive.api.MailArchiveService;
 import org.sakaiproject.site.api.SiteService;
@@ -44,7 +45,7 @@ public class SakaiMessageHandlerFactory implements MessageHandlerFactory {
 
 
     private Log log = LogFactory.getLog(SakaiMessageHandlerFactory.class);
-    private ResourceLoader rb = new ResourceLoader("sakaimailet");
+    private InternationalizedMessages rb = new ResourceLoader("sakaimailet");
 
     /**
      * The user name of the postmaster user - the one who posts incoming mail.
@@ -133,353 +134,7 @@ public class SakaiMessageHandlerFactory implements MessageHandlerFactory {
 
     @Override
     public MessageHandler create(MessageContext ctx) {
-        return new MessageHandler() {
-            private String from;
-            private Collection<Recipient> recipients = new LinkedList<Recipient>();
-
-
-            @Override
-            public void from(String from) throws RejectException {
-                this.from = from;
-            }
-
-            @Override
-            public void recipient(String to) throws RejectException {
-                SplitEmailAddress address = SplitEmailAddress.parse(to);
-
-                if (serverConfigurationService.getServerName().equals(address.getDomain()) ||
-                        serverConfigurationService.getServerNameAliases().contains(address.getDomain())) {
-                    Recipient recipient = new Recipient();
-                    recipient.address = address;
-                    recipient.channel = getMailArchiveChannel(address.getLocal());
-
-                    recipients.add(recipient);
-                } else {
-                    // TODO Correct SMTP error?
-                    throw new RejectException(551, "Don't accept mail for: " + address.getDomain());
-                }
-
-            }
-
-
-            /**
-             * Just wrapper to parse an address.
-             * @param address The email address.
-             * @return An InternerAddress for the email address.
-             */
-            protected InternetAddress parseAddress(String address) {
-                try {
-                    return new InternetAddress(address);
-                } catch (AddressException e) {
-                    // This should never happen as it should have already been validated.
-                    throw new RejectException("Not a valid address: " + address);
-                }
-            }
-
-            @Override
-            public void data(InputStream data) throws RejectException, TooMuchDataException, IOException {
-                // Want to buffer a little bit in memory and then write it all out to disk if it's large.
-                // TODO Switch to buffer that will switch to a file later on if the input is too big.
-                // BufferedInputStream smallBuffer = new BufferedInputStream(data, 65535);
-                // smallBuffer.
-                // SharedFileInputStream fis = new SharedFileInputStream(null);
-
-
-                try {
-                    // TODO Proper properties.
-                    MimeMessage msg = new MimeMessage(Session.getDefaultInstance(new Properties()), data);
-
-                    Date sent = msg.getSentDate();
-                    if (sent == null) {
-                        log.debug("No Date header, using current time.");
-                        sent = new Date();
-                    }
-                    String id = msg.getMessageID();
-
-                    String subject = StringUtils.trimToNull(msg.getSubject());
-
-                    Enumeration<String> headers = msg.getAllHeaderLines();
-                    List<String> mailHeaders = new Vector<String>();
-                    while (headers.hasMoreElements()) {
-                        String line = (String) headers.nextElement();
-                        // check if string starts with "Content-Type", ignoring case
-                        if (line.regionMatches(true, 0, MailArchiveService.HEADER_CONTENT_TYPE, 0, MailArchiveService.HEADER_CONTENT_TYPE.length())) {
-                            String contentType = line.substring(0, MailArchiveService.HEADER_CONTENT_TYPE.length());
-                            mailHeaders.add(line.replaceAll(contentType, MailArchiveService.HEADER_OUTER_CONTENT_TYPE));
-                        }
-                        // don't copy null subject lines. we'll add a real one below
-                        if (!(line.regionMatches(true, 0, MailArchiveService.HEADER_SUBJECT, 0, MailArchiveService.HEADER_SUBJECT.length()) &&
-                                subject == null))
-                            mailHeaders.add(line);
-
-                    }
-
-                    //Add headers for a null subject, keep null in DB
-                    if (subject == null) {
-                        mailHeaders.add(MailArchiveService.HEADER_SUBJECT + ": <" + rb.getString("err_no_subject") + ">");
-                    }
-
-                    if (log.isDebugEnabled()) {
-                        log.debug(id + " : mail: from:" + from + " sent: " + timeService.newTime(sent.getTime()).toStringLocalFull()
-                                + " subject: " + subject);
-                    }
-
-                    // process for each recipient
-                    Iterator<Recipient> it = recipients.iterator();
-                    while (it.hasNext()) {
-                        Recipient recipient = it.next();
-
-                        String mailId = recipient.address.getLocal();
-                        try {
-                            MailArchiveChannel channel = recipient.channel;
-                            if (channel == null) return;
-
-                            // prepare the message
-                            StringBuilder bodyBuf[] = new StringBuilder[2];
-                            bodyBuf[0] = new StringBuilder();
-                            bodyBuf[1] = new StringBuilder();
-                            List<Reference> attachments = entityManager.newReferenceList();
-                            String siteId = null;
-                            if (siteService.siteExists(channel.getContext())) {
-                                siteId = channel.getContext();
-                            }
-
-                            try {
-                                StringBuilder bodyContentType = new StringBuilder();
-                                parseParts(siteId, msg, id, bodyBuf, bodyContentType, attachments, Integer.valueOf(-1));
-
-                                if (bodyContentType.length() > 0) {
-                                    // save the content type of the message body - which may be different from the
-                                    // overall MIME type of the message (multipart, etc)
-                                    mailHeaders.add(MailArchiveService.HEADER_INNER_CONTENT_TYPE + ": " + bodyContentType);
-                                }
-                            } catch (MessagingException e) {
-                                // NOTE: if this happens it just means we don't get the extra header, not the end of the world
-                                //e.printStackTrace();
-                                log.warn("MessagingException: service(): msg.getContent() threw: " + e, e);
-                            } catch (IOException e) {
-                                // NOTE: if this happens it just means we don't get the extra header, not the end of the world
-                                //e.printStackTrace();
-                                log.warn("IOException: service(): msg.getContent() threw: " + e, e);
-                            }
-
-                            mailHeaders.add("List-Id: <" + channel.getId() + ".localhost>");
-                            // post the message to the group's channel
-                            String body[] = new String[2];
-                            body[0] = bodyBuf[0].toString(); // plain/text
-                            body[1] = bodyBuf[1].toString(); // html/text
-
-                            try {
-                                if (channel.getReplyToList()) {
-                                    List<String> modifiedHeaders = new Vector<String>();
-                                    for (String header : (List<String>) mailHeaders) {
-                                        if (header != null && !header.startsWith("Reply-To:")) {
-                                            modifiedHeaders.add(header);
-                                        }
-                                    }
-                                    // Note: can't use recipient, since it's host may be configured as mailId@myhost.james
-                                    String mailHost = serverConfigurationService.getServerName();
-
-                                    // TODO Must be easier way,
-                                    InternetAddress replyTo = new InternetAddress(mailId + "@" + mailHost);
-                                    if (log.isDebugEnabled()) {
-                                        log.debug("Set Reply-To address to " + replyTo.toString());
-                                    }
-                                    modifiedHeaders.add("Reply-To: " + replyTo.toString());
-
-                                    // post the message to the group's channel
-                                    channel.addMailArchiveMessage(subject, from.toString(), timeService.newTime(sent.getTime()), modifiedHeaders,
-                                            attachments, body);
-                                } else {
-                                    // post the message to the group's channel
-                                    channel.addMailArchiveMessage(subject, from.toString(), timeService.newTime(sent.getTime()), mailHeaders,
-                                            attachments, body);
-                                }
-                            } catch (PermissionException pe) {
-                                // INDICATES that the current user does not have permission to add or get the mail archive message from the current channel
-                                // This generally should not happen because the current user should be the postmaster
-                                log.warn("mailarchive PermissionException message service failure: (id=" + id + ") (mailId=" + mailId + ") : " + pe, pe);
-                            }
-
-                            if (log.isDebugEnabled()) {
-                                log.debug(id + " : delivered to:" + mailId);
-                            }
-                        } catch (Exception ex) {
-                            // INDICATES that some general exception has occurred which we did not expect
-                            // This definitely should NOT happen
-                            log.error("mailarchive General message service exception: (id=" + id + ") (mailId=" + mailId + ") : " + ex, ex);
-                        }
-                    }
-                } catch (MessagingException me) {
-                    // TODO
-                    throw new RejectException();
-                } finally {
-                    // clear out any current current bindings
-                    threadLocalManager.clear();
-                }
-            }
-
-            /**
-             * This checks that we should accept mail for the supplied recipient
-             * @param mailId
-             * @return
-             * @throws IdUnusedException
-             */
-            protected MailArchiveChannel getMailArchiveChannel(String mailId) throws RejectException {
-
-                try {
-
-                    // eat the no-reply
-                    if ("no-reply".equalsIgnoreCase(mailId)) {
-                        if (log.isInfoEnabled()) {
-                            log.info("Incoming message mailId (" + mailId + ") set to no-reply, mail processing cancelled");
-                        }
-                        return null;
-                    }
-
-                    // find the channel (mailbox) that this is addressed to
-                    // for now, check only for it being a site or alias to a site.
-                    // %%% - add user and other later -ggolden
-                    MailArchiveChannel channel = null;
-
-                    // first, assume the mailId is a site id
-                    String channelRef = mailArchiveService.channelReference(mailId, SiteService.MAIN_CONTAINER);
-                    try {
-                        channel = mailArchiveService.getMailArchiveChannel(channelRef);
-                        if (log.isDebugEnabled()) {
-                            log.debug("Incoming message mailId (" + mailId + ") IS a valid site channel reference");
-                        }
-                    } catch (IdUnusedException goOn) {
-                        // INDICATES the incoming message is NOT for a currently valid site
-                        if (log.isDebugEnabled()) {
-                            log.debug("Incoming message mailId (" + mailId + ") is NOT a valid site channel reference, will attempt more matches");
-                        }
-                    } catch (PermissionException e) {
-                        // INDICATES the channel is valid but the user has no permission to access it
-                        // This generally should not happen because the current user should be the postmaster
-                        log.warn("No access to alias, this should never happen.", e);
-                        // BOUNCE REPLY - send a message back to the user to let them know their email failed
-                        String errMsg = rb.getString("err_not_member") + "\n\n";
-                        String mailSupport = StringUtils.trimToNull(serverConfigurationService.getString("mail.support"));
-                        if (mailSupport != null) {
-                            errMsg += (String) rb.getFormattedMessage("err_questions", new Object[]{mailSupport}) + "\n";
-                        }
-                        throw new RejectException(450, errMsg);
-                    }
-
-                    // next, if not a site, see if it's an alias to a site or channel
-                    if (channel == null) {
-                        // if not an alias, it will throw the IdUnusedException caught below
-                        Reference ref = entityManager.newReference(aliasService.getTarget(mailId));
-
-                        if (ref.getType().equals(SiteService.APPLICATION_ID)) {
-                            // ref is a site
-                            // now we have a site reference, try for it's channel
-                            channelRef = mailArchiveService.channelReference(ref.getId(), SiteService.MAIN_CONTAINER);
-                            if (log.isDebugEnabled()) {
-                                log.debug("Incoming message mailId (" + mailId + ") IS a valid site reference (" + ref.getId() + ")");
-                            }
-                        } else if (ref.getType().equals(MailArchiveService.APPLICATION_ID)) {
-                            // ref is a channel
-                            channelRef = ref.getReference();
-                            if (log.isDebugEnabled()) {
-                                log.debug("Incoming message mailId (" + mailId + ") IS a valid channel reference (" + ref.getId() + ")");
-                            }
-                        } else {
-                            // ref cannot be be matched
-                            if (log.isInfoEnabled()) {
-                                log.info("Mail rejected: unknown address: " + mailId + " : mailId (" + mailId + ") does NOT match site, alias, or other current channel");
-                            }
-                            if (log.isDebugEnabled()) {
-                                log.debug("Incoming message mailId (" + mailId + ") is NOT a valid does NOT match site, alias, or other current channel reference (" + ref.getId() + "), message rejected");
-                            }
-                            throw new IdUnusedException(mailId);
-                        }
-
-                        // if there's no channel for this site, it will throw the IdUnusedException caught below
-                        try {
-                            channel = mailArchiveService.getMailArchiveChannel(channelRef);
-                        } catch (PermissionException e) {
-                            // INDICATES the channel is valid but the user has no permission to access it
-                            // This generally should not happen because the current user should be the postmaster
-                            log.warn("No access to alias, this should never happen.", e);
-                            // BOUNCE REPLY - send a message back to the user to let them know their email failed
-                            String errMsg = rb.getString("err_not_member") + "\n\n";
-                            String mailSupport = StringUtils.trimToNull(serverConfigurationService.getString("mail.support"));
-                            if (mailSupport != null) {
-                                errMsg += (String) rb.getFormattedMessage("err_questions", new Object[]{mailSupport}) + "\n";
-                            }
-                            throw new RejectException(450, errMsg);
-                        }
-                        if (log.isDebugEnabled()) {
-                            log.debug("Incoming message mailId (" + mailId + ") IS a valid channel (" + channelRef + "), found channel: " + channel);
-                        }
-                    }
-                    if (channel == null) {
-                        if (log.isDebugEnabled()) {
-                            log.debug("Incoming message mailId (" + mailId + "), channelRef (" + channelRef + ") could not be resolved and is null: " + channel);
-                        }
-                        // this should never happen but it is here just in case
-                        throw new IdUnusedException(mailId);
-                    }
-
-                    // skip disabled channels
-                    if (!channel.getEnabled()) {
-                        // INDICATES that the channel is NOT currently enabled so no messages can be received
-                        if (from.startsWith(POSTMASTER)) {
-                            // Do nothing.
-                        } else {
-                            // BOUNCE REPLY - send a message back to the user to let them know their email failed
-                            String errMsg = rb.getString("err_email_off") + "\n\n";
-                            String mailSupport = StringUtils.trimToNull(serverConfigurationService.getString("mail.support"));
-                            if (mailSupport != null) {
-                                errMsg += (String) rb.getFormattedMessage("err_questions", new Object[]{mailSupport}) + "\n";
-                            }
-                            throw new RejectException(450, errMsg);
-                        }
-
-                        if (log.isInfoEnabled()) {
-                            log.info("Mail rejected: channel (" + channelRef + ") not enabled: " + mailId);
-                        }
-                        return null;
-                    }
-
-                    // for non-open channels, make sure the from is a member
-                    if (!channel.getOpen()) {
-                        // see if our fromAddr is the email address of any of the users who are permitted to add messages to the channel.
-                        if (!fromValidUser(from, channel)) {
-                            // INDICATES user is not allowed to send messages to this group
-                            if (log.isInfoEnabled()) {
-                                log.info("Mail rejected: from: " + from + " not authorized for site: " + mailId + " and channel (" + channelRef + ")");
-                            }
-                            // BOUNCE REPLY - send a message back to the user to let them know their email failed
-                            String errMsg = rb.getString("err_not_member") + "\n\n";
-                            String mailSupport = StringUtils.trimToNull(serverConfigurationService.getString("mail.support"));
-                            if (mailSupport != null) {
-                                errMsg += (String) rb.getFormattedMessage("err_questions", new Object[]{mailSupport}) + "\n";
-                            }
-                            throw new RejectException(450, errMsg);
-                        }
-                    }
-                    return channel;
-                } catch (IdUnusedException e) {
-                    if (POSTMASTER.equals(mailId) || from.startsWith(POSTMASTER + "@")) {
-                        // TODO
-                    }
-                    String errMsg = rb.getString("err_addr_unknown") + "\n\n";
-                    String mailSupport = StringUtils.trimToNull(serverConfigurationService.getString("mail.support"));
-                    if (mailSupport != null) {
-                        errMsg += (String) rb.getFormattedMessage("err_questions", new Object[]{mailSupport}) + "\n";
-                    }
-                    throw new RejectException(450, errMsg);
-                }
-            }
-
-            @Override
-            public void done() {
-
-            }
-        };
+        return new ArchiveMessageHandler();
     }
 
     /**
@@ -744,6 +399,7 @@ public class SakaiMessageHandlerFactory implements MessageHandlerFactory {
 
     /**
      * Create an attachment, adding it to the list of attachments.
+     * @param siteId The site that this archive is in. Can be <code>null</code> if a site can't be found.
      */
     protected Reference createAttachment(String siteId, List attachments, String type, String fileName, byte[] body, String id) {
         // we just want the file name part - strip off any drive and path stuff
@@ -778,8 +434,343 @@ public class SakaiMessageHandlerFactory implements MessageHandlerFactory {
         }
     }
 
+    /**
+     * Just a simple tuple to like a parsed email address to a channel to deliver the message to.
+     */
     protected class Recipient {
         protected SplitEmailAddress address;
         protected MailArchiveChannel channel;
+    }
+
+    /**
+     * This is our message handler, a new instance is created for each incoming connection.
+     */
+    private class ArchiveMessageHandler implements MessageHandler {
+        // The sender
+        private String from;
+        // The recipients
+        private Collection<Recipient> recipients = new LinkedList<Recipient>();
+
+
+        @Override
+        public void from(String from) throws RejectException {
+            this.from = from;
+        }
+
+        @Override
+        public void recipient(String to) throws RejectException {
+            SplitEmailAddress address = SplitEmailAddress.parse(to);
+            // Check these are domains we're handling
+            if (serverConfigurationService.getServerName().equals(address.getDomain()) ||
+                    serverConfigurationService.getServerNameAliases().contains(address.getDomain())) {
+                Recipient recipient = new Recipient();
+                recipient.address = address;
+                recipient.channel = getMailArchiveChannel(address.getLocal());
+                recipients.add(recipient);
+            } else {
+                throw new RejectException(551, "Don't accept mail for: " + address.getDomain());
+            }
+
+        }
+
+        @Override
+        public void data(InputStream data) throws RejectException, TooMuchDataException, IOException {
+
+            try {
+                // TODO Proper properties.
+                MimeMessage msg = new MimeMessage(Session.getDefaultInstance(new Properties()), data);
+
+                Date sent = msg.getSentDate();
+                if (sent == null) {
+                    log.debug("No Date header, using current time.");
+                    sent = new Date();
+                }
+                String id = msg.getMessageID();
+
+                String subject = StringUtils.trimToNull(msg.getSubject());
+
+                Enumeration<String> headers = msg.getAllHeaderLines();
+                List<String> mailHeaders = new Vector<String>();
+                while (headers.hasMoreElements()) {
+                    String line = (String) headers.nextElement();
+                    // check if string starts with "Content-Type", ignoring case
+                    if (line.regionMatches(true, 0, MailArchiveService.HEADER_CONTENT_TYPE, 0, MailArchiveService.HEADER_CONTENT_TYPE.length())) {
+                        String contentType = line.substring(0, MailArchiveService.HEADER_CONTENT_TYPE.length());
+                        mailHeaders.add(line.replaceAll(contentType, MailArchiveService.HEADER_OUTER_CONTENT_TYPE));
+                    }
+                    // don't copy null subject lines. we'll add a real one below
+                    if (!(line.regionMatches(true, 0, MailArchiveService.HEADER_SUBJECT, 0, MailArchiveService.HEADER_SUBJECT.length()) &&
+                            subject == null))
+                        mailHeaders.add(line);
+
+                }
+
+                //Add headers for a null subject, keep null in DB
+                if (subject == null) {
+                    mailHeaders.add(MailArchiveService.HEADER_SUBJECT + ": <" + rb.getString("err_no_subject") + ">");
+                }
+
+                if (log.isDebugEnabled()) {
+                    log.debug(id + " : mail: from:" + from + " sent: " + timeService.newTime(sent.getTime()).toStringLocalFull()
+                            + " subject: " + subject);
+                }
+
+                // process for each recipient
+                Iterator<Recipient> it = recipients.iterator();
+                while (it.hasNext()) {
+                    Recipient recipient = it.next();
+
+                    String mailId = recipient.address.getLocal();
+                    try {
+                        MailArchiveChannel channel = recipient.channel;
+                        // The channel might be null for postmaster or no-reply local parts.
+                        if (channel == null) return;
+
+                        // prepare the message
+                        StringBuilder bodyBuf[] = new StringBuilder[2];
+                        bodyBuf[0] = new StringBuilder();
+                        bodyBuf[1] = new StringBuilder();
+                        List<Reference> attachments = entityManager.newReferenceList();
+                        String siteId = null;
+                        if (siteService.siteExists(channel.getContext())) {
+                            siteId = channel.getContext();
+                        }
+
+                        try {
+                            StringBuilder bodyContentType = new StringBuilder();
+                            parseParts(siteId, msg, id, bodyBuf, bodyContentType, attachments, Integer.valueOf(-1));
+
+                            if (bodyContentType.length() > 0) {
+                                // save the content type of the message body - which may be different from the
+                                // overall MIME type of the message (multipart, etc)
+                                mailHeaders.add(MailArchiveService.HEADER_INNER_CONTENT_TYPE + ": " + bodyContentType);
+                            }
+                        } catch (MessagingException e) {
+                            // NOTE: if this happens it just means we don't get the extra header, not the end of the world
+                            //e.printStackTrace();
+                            log.warn("MessagingException: service(): msg.getContent() threw: " + e, e);
+                        } catch (IOException e) {
+                            // NOTE: if this happens it just means we don't get the extra header, not the end of the world
+                            //e.printStackTrace();
+                            log.warn("IOException: service(): msg.getContent() threw: " + e, e);
+                        }
+
+                        mailHeaders.add("List-Id: <" + channel.getId() + ".localhost>");
+                        // post the message to the group's channel
+                        String body[] = new String[2];
+                        body[0] = bodyBuf[0].toString(); // plain/text
+                        body[1] = bodyBuf[1].toString(); // html/text
+
+                        try {
+                            if (channel.getReplyToList()) {
+                                List<String> modifiedHeaders = new ArrayList<String>();
+                                for (String header : (List<String>) mailHeaders) {
+                                    if (header != null && !header.startsWith("Reply-To:")) {
+                                        modifiedHeaders.add(header);
+                                    }
+                                }
+                                // Note: can't use recipient, since it's host may be configured as mailId@myhost.james
+                                String mailHost = serverConfigurationService.getServerName();
+
+                                // TODO Must be easier way,
+                                InternetAddress replyTo = new InternetAddress(mailId + "@" + mailHost);
+                                if (log.isDebugEnabled()) {
+                                    log.debug("Set Reply-To address to " + replyTo.toString());
+                                }
+                                modifiedHeaders.add("Reply-To: " + replyTo.toString());
+
+                                // post the message to the group's channel
+                                channel.addMailArchiveMessage(subject, from.toString(), timeService.newTime(sent.getTime()), modifiedHeaders,
+                                        attachments, body);
+                            } else {
+                                // post the message to the group's channel
+                                channel.addMailArchiveMessage(subject, from.toString(), timeService.newTime(sent.getTime()), mailHeaders,
+                                        attachments, body);
+                            }
+                        } catch (PermissionException pe) {
+                            // INDICATES that the current user does not have permission to add or get the mail archive message from the current channel
+                            // This generally should not happen because the current user should be the postmaster
+                            log.warn("mailarchive PermissionException message service failure: (id=" + id + ") (mailId=" + mailId + ") : " + pe, pe);
+                        }
+
+                        if (log.isDebugEnabled()) {
+                            log.debug(id + " : delivered to:" + mailId);
+                        }
+                    } catch (Exception ex) {
+                        // INDICATES that some general exception has occurred which we did not expect
+                        // This definitely should NOT happen
+                        log.error("mailarchive General message service exception: (id=" + id + ") (mailId=" + mailId + ") : " + ex, ex);
+                    }
+                }
+            } catch (MessagingException me) {
+                // TODO
+                throw new RejectException();
+            } finally {
+                // clear out any current current bindings
+                threadLocalManager.clear();
+            }
+        }
+
+        /**
+         * This checks that we should accept mail for the supplied recipient.
+         * @param mailId The local part of the email.
+         * @return The channel that is associated with the mailId or <code>null</code> if the email should
+         * be silently thrown away.
+         * @throws org.subethamail.smtp.RejectException If the recipient shouldn't be accepted.
+         */
+        protected MailArchiveChannel getMailArchiveChannel(String mailId) throws RejectException {
+
+            try {
+
+                // eat the no-reply
+                if ("no-reply".equalsIgnoreCase(mailId)) {
+                    if (log.isInfoEnabled()) {
+                        log.info("Incoming message mailId (" + mailId + ") set to no-reply, mail processing cancelled");
+                    }
+                    return null;
+                }
+
+                // find the channel (mailbox) that this is addressed to
+                // for now, check only for it being a site or alias to a site.
+                // %%% - add user and other later -ggolden
+                MailArchiveChannel channel = null;
+
+                // first, assume the mailId is a site id
+                String channelRef = mailArchiveService.channelReference(mailId, SiteService.MAIN_CONTAINER);
+                try {
+                    channel = mailArchiveService.getMailArchiveChannel(channelRef);
+                    if (log.isDebugEnabled()) {
+                        log.debug("Incoming message mailId (" + mailId + ") IS a valid site channel reference");
+                    }
+                } catch (IdUnusedException goOn) {
+                    // INDICATES the incoming message is NOT for a currently valid site
+                    if (log.isDebugEnabled()) {
+                        log.debug("Incoming message mailId (" + mailId + ") is NOT a valid site channel reference, will attempt more matches");
+                    }
+                } catch (PermissionException e) {
+                    // INDICATES the channel is valid but the user has no permission to access it
+                    // This generally should not happen because the current user should be the postmaster
+                    log.warn("No access to alias, this should never happen.", e);
+                    // BOUNCE REPLY - send a message back to the user to let them know their email failed
+                    String errMsg = rb.getString("err_not_member") + "\n\n";
+                    String mailSupport = StringUtils.trimToNull(serverConfigurationService.getString("mail.support"));
+                    if (mailSupport != null) {
+                        errMsg += (String) rb.getFormattedMessage("err_questions", new Object[]{mailSupport}) + "\n";
+                    }
+                    throw new RejectException(450, errMsg);
+                }
+
+                // next, if not a site, see if it's an alias to a site or channel
+                if (channel == null) {
+                    // if not an alias, it will throw the IdUnusedException caught below
+                    Reference ref = entityManager.newReference(aliasService.getTarget(mailId));
+
+                    if (ref.getType().equals(SiteService.APPLICATION_ID)) {
+                        // ref is a site
+                        // now we have a site reference, try for it's channel
+                        channelRef = mailArchiveService.channelReference(ref.getId(), SiteService.MAIN_CONTAINER);
+                        if (log.isDebugEnabled()) {
+                            log.debug("Incoming message mailId (" + mailId + ") IS a valid site reference (" + ref.getId() + ")");
+                        }
+                    } else if (ref.getType().equals(MailArchiveService.APPLICATION_ID)) {
+                        // ref is a channel
+                        channelRef = ref.getReference();
+                        if (log.isDebugEnabled()) {
+                            log.debug("Incoming message mailId (" + mailId + ") IS a valid channel reference (" + ref.getId() + ")");
+                        }
+                    } else {
+                        // ref cannot be be matched
+                        if (log.isInfoEnabled()) {
+                            log.info("Mail rejected: unknown address: " + mailId + " : mailId (" + mailId + ") does NOT match site, alias, or other current channel");
+                        }
+                        if (log.isDebugEnabled()) {
+                            log.debug("Incoming message mailId (" + mailId + ") is NOT a valid does NOT match site, alias, or other current channel reference (" + ref.getId() + "), message rejected");
+                        }
+                        throw new IdUnusedException(mailId);
+                    }
+
+                    // if there's no channel for this site, it will throw the IdUnusedException caught below
+                    try {
+                        channel = mailArchiveService.getMailArchiveChannel(channelRef);
+                    } catch (PermissionException e) {
+                        // INDICATES the channel is valid but the user has no permission to access it
+                        // This generally should not happen because the current user should be the postmaster
+                        log.warn("No access to alias, this should never happen.", e);
+                        // BOUNCE REPLY - send a message back to the user to let them know their email failed
+                        String errMsg = rb.getString("err_not_member") + "\n\n";
+                        String mailSupport = StringUtils.trimToNull(serverConfigurationService.getString("mail.support"));
+                        if (mailSupport != null) {
+                            errMsg += (String) rb.getFormattedMessage("err_questions", new Object[]{mailSupport}) + "\n";
+                        }
+                        throw new RejectException(450, errMsg);
+                    }
+                    if (log.isDebugEnabled()) {
+                        log.debug("Incoming message mailId (" + mailId + ") IS a valid channel (" + channelRef + "), found channel: " + channel);
+                    }
+                }
+                if (channel == null) {
+                    if (log.isDebugEnabled()) {
+                        log.debug("Incoming message mailId (" + mailId + "), channelRef (" + channelRef + ") could not be resolved and is null: " + channel);
+                    }
+                    // this should never happen but it is here just in case
+                    throw new IdUnusedException(mailId);
+                }
+
+                // skip disabled channels
+                if (!channel.getEnabled()) {
+                    // INDICATES that the channel is NOT currently enabled so no messages can be received
+                    if (from.startsWith(POSTMASTER)) {
+                        // Do nothing.
+                    } else {
+                        // BOUNCE REPLY - send a message back to the user to let them know their email failed
+                        String errMsg = rb.getString("err_email_off") + "\n\n";
+                        String mailSupport = StringUtils.trimToNull(serverConfigurationService.getString("mail.support"));
+                        if (mailSupport != null) {
+                            errMsg += (String) rb.getFormattedMessage("err_questions", new Object[]{mailSupport}) + "\n";
+                        }
+                        throw new RejectException(450, errMsg);
+                    }
+
+                    if (log.isInfoEnabled()) {
+                        log.info("Mail rejected: channel (" + channelRef + ") not enabled: " + mailId);
+                    }
+                    return null;
+                }
+
+                // for non-open channels, make sure the from is a member
+                if (!channel.getOpen()) {
+                    // see if our fromAddr is the email address of any of the users who are permitted to add messages to the channel.
+                    if (!fromValidUser(from, channel)) {
+                        // INDICATES user is not allowed to send messages to this group
+                        if (log.isInfoEnabled()) {
+                            log.info("Mail rejected: from: " + from + " not authorized for site: " + mailId + " and channel (" + channelRef + ")");
+                        }
+                        // BOUNCE REPLY - send a message back to the user to let them know their email failed
+                        String errMsg = rb.getString("err_not_member") + "\n\n";
+                        String mailSupport = StringUtils.trimToNull(serverConfigurationService.getString("mail.support"));
+                        if (mailSupport != null) {
+                            errMsg += (String) rb.getFormattedMessage("err_questions", new Object[]{mailSupport}) + "\n";
+                        }
+                        throw new RejectException(450, errMsg);
+                    }
+                }
+                return channel;
+            } catch (IdUnusedException e) {
+                if (POSTMASTER.equals(mailId) || from.startsWith(POSTMASTER + "@")) {
+                    // TODO
+                }
+                String errMsg = rb.getString("err_addr_unknown") + "\n\n";
+                String mailSupport = StringUtils.trimToNull(serverConfigurationService.getString("mail.support"));
+                if (mailSupport != null) {
+                    errMsg += (String) rb.getFormattedMessage("err_questions", new Object[]{mailSupport}) + "\n";
+                }
+                throw new RejectException(450, errMsg);
+            }
+        }
+
+        @Override
+        public void done() {
+            log.debug("Cleaning up");
+        }
     }
 }
