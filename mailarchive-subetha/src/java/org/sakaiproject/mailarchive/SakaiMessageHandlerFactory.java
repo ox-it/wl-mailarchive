@@ -566,7 +566,7 @@ public class SakaiMessageHandlerFactory implements MessageHandlerFactory {
                             log.warn("IOException: service(): msg.getContent() threw: " + e, e);
                         }
 
-                        mailHeaders.add("List-Id: <" + channel.getId() + ".localhost>");
+                        mailHeaders.add("List-Id: <"+ channel.getId()+ "."+ serverConfigurationService.getServerName()+ ">");
                         // post the message to the group's channel
                         String body[] = new String[2];
                         body[0] = bodyBuf[0].toString(); // plain/text
