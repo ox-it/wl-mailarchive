@@ -22,7 +22,6 @@ import org.sakaiproject.thread_local.api.ThreadLocalManager;
 import org.sakaiproject.time.api.TimeService;
 import org.sakaiproject.user.api.User;
 import org.sakaiproject.user.api.UserDirectoryService;
-import org.sakaiproject.util.ResourceLoader;
 import org.sakaiproject.util.Validator;
 import org.sakaiproject.util.Web;
 import org.subethamail.smtp.*;
@@ -45,7 +44,9 @@ public class SakaiMessageHandlerFactory implements MessageHandlerFactory {
 
 
     private Log log = LogFactory.getLog(SakaiMessageHandlerFactory.class);
-    private InternationalizedMessages rb = new ResourceLoader("sakaimailet");
+    // This isn't static and isn't setup straight away and the standard implementation pulls in the component
+    // manager.
+    private InternationalizedMessages rb;
 
     /**
      * The user name of the postmaster user - the one who posts incoming mail.
@@ -100,10 +101,20 @@ public class SakaiMessageHandlerFactory implements MessageHandlerFactory {
         this.mailArchiveService = mailArchiveService;
     }
 
+    public void setMessages(InternationalizedMessages messages) {
+        this.rb = messages;
+    }
+
     // used when parsing email header parts
     private static final String NAME_PREFIX = "name=";
 
     public void init() {
+        if (serverConfigurationService == null || entityManager == null || aliasService == null ||
+                userDirectoryService == null || siteService == null || timeService == null || threadLocalManager == null
+                || contentHostingService == null || mailArchiveService == null || rb == null) {
+
+            throw new IllegalStateException("One or more dependencies haven't been set.");
+        }
         if (serverConfigurationService.getBoolean("smtp.enabled", false)) {
             server = new SMTPServer(this);
 
@@ -340,7 +351,6 @@ public class SakaiMessageHandlerFactory implements MessageHandlerFactory {
             }
 
             ContentType cType = new ContentType(type);
-            String disposition = p.getDisposition();
             int approxSize = p.getSize();
 
             if (name == null) {
@@ -375,22 +385,27 @@ public class SakaiMessageHandlerFactory implements MessageHandlerFactory {
             }
 
             // read the attachments bytes, and create it as an attachment in content hosting
-            byte[] bodyBytes = readBody(approxSize, p.getInputStream());
-            if ((bodyBytes != null) && (bodyBytes.length > 0)) {
+            if (p.getSize() > 0) {
+                InputStream stream = p.getInputStream();
                 // can we ignore the attachment it it's just whitespace chars??
-                Reference attachment = createAttachment(siteId, attachments, cType.getBaseType(), name, bodyBytes, id);
+                ContentResource attachment = createAttachment(siteId, cType.getBaseType(), name, stream, id);
+                if (attachment != null) {
+                    // add a dereferencer for this to the attachments
+                    Reference ref = entityManager.newReference(attachment.getReference());
+                    attachments.add(ref);
+                }
 
                 // add plain/text attachment reference (if plain/text message)
                 if (attachment != null && bodyBuf[0].length() > 0)
-                    bodyBuf[0].append("[see attachment: \"" + name + "\", size: " + bodyBytes.length + " bytes]\n\n");
+                    bodyBuf[0].append("[see attachment: \"" + name + "\", size: " + attachment.getContentLength() + " bytes]\n\n");
 
                 // add html/text attachment reference (if html/text message)
                 if (attachment != null && bodyBuf[1].length() > 0)
-                    bodyBuf[1].append("<p>[see attachment: \"" + name + "\", size: " + bodyBytes.length + " bytes]</p>");
+                    bodyBuf[1].append("<p>[see attachment: \"" + name + "\", size: " + attachment.getContentLength() + " bytes]</p>");
 
                 // add plain/text attachment reference (if no plain/text and no html/text)
                 if (attachment != null && bodyBuf[0].length() == 0 && bodyBuf[1].length() == 0)
-                    bodyBuf[0].append("[see attachment: \"" + name + "\", size: " + bodyBytes.length + " bytes]\n\n");
+                    bodyBuf[0].append("[see attachment: \"" + name + "\", size: " + attachment.getContentLength() + " bytes]\n\n");
             }
         }
 
@@ -401,7 +416,7 @@ public class SakaiMessageHandlerFactory implements MessageHandlerFactory {
      * Create an attachment, adding it to the list of attachments.
      * @param siteId The site that this archive is in. Can be <code>null</code> if a site can't be found.
      */
-    protected Reference createAttachment(String siteId, List attachments, String type, String fileName, byte[] body, String id) {
+    protected ContentResource createAttachment(String siteId, String type, String fileName, InputStream in, String id) {
         // we just want the file name part - strip off any drive and path stuff
         String name = FilenameUtils.getName(fileName);  //Validator.getFileName(fileName);
         String resourceName = Validator.escapeResourceName(fileName);
@@ -415,19 +430,15 @@ public class SakaiMessageHandlerFactory implements MessageHandlerFactory {
         try {
             ContentResource attachment;
             if (siteId == null) {
-                attachment = contentHostingService.addAttachmentResource(resourceName, type, body, props);
+                attachment = contentHostingService.addAttachmentResource(resourceName, type, in, props);
             } else {
                 attachment = contentHostingService.addAttachmentResource(
-                        resourceName, siteId, null, type, body, props);
+                        resourceName, siteId, null, type, in, props);
             }
 
-            // add a dereferencer for this to the attachments
-            Reference ref = entityManager.newReference(attachment.getReference());
-            attachments.add(ref);
+            log.debug(id + " : attachment: " + attachment.getReference() + " size: " + attachment.getContentLength());
 
-            log.debug(id + " : attachment: " + ref.getReference() + " size: " + body.length);
-
-            return ref;
+            return attachment;
         } catch (Exception any) {
             log.warn(id + " : exception adding attachment resource: " + name + " : " + any.toString());
             return null;

@@ -11,20 +11,22 @@ import org.sakaiproject.entity.api.EntityManager;
 import org.sakaiproject.entity.api.Reference;
 import org.sakaiproject.exception.IdUnusedException;
 import org.sakaiproject.exception.PermissionException;
+import org.sakaiproject.i18n.InternationalizedMessages;
 import org.sakaiproject.mailarchive.api.MailArchiveChannel;
 import org.sakaiproject.mailarchive.api.MailArchiveService;
 import org.sakaiproject.site.api.SiteService;
 import org.sakaiproject.thread_local.api.ThreadLocalManager;
 import org.sakaiproject.time.api.Time;
 import org.sakaiproject.time.api.TimeService;
+import org.sakaiproject.tool.api.SessionManager;
+import org.sakaiproject.user.api.PreferencesService;
 import org.sakaiproject.user.api.UserDirectoryService;
 
 import javax.mail.*;
 import javax.mail.internet.InternetAddress;
 import javax.mail.internet.MimeMessage;
 
-import java.util.List;
-import java.util.Properties;
+import java.util.*;
 
 import static org.mockito.Matchers.any;
 import static org.mockito.Matchers.eq;
@@ -67,11 +69,22 @@ public class SakaiMessageHandlerTest {
     @Mock
     private MailArchiveService mailArchiveService;
 
+    @Mock
+    private SessionManager sessionManager;
+
+    @Mock
+    private PreferencesService preferencesService;
+
+    private InternationalizedMessages i18nMessages;
+
     private Properties props;
 
     @Before
     public void setUp() {
         initMocks(this);
+
+        i18nMessages = new TestResourceLoader(sessionManager, preferencesService);
+
         factory = new SakaiMessageHandlerFactory();
         factory.setServerConfigurationService(serverConfigurationService);
         factory.setEntityManager(entityManager);
@@ -82,6 +95,8 @@ public class SakaiMessageHandlerTest {
         factory.setThreadLocalManager(threadLocalManager);
         factory.setContentHostingService(contentHostingService);
         factory.setMailArchiveService(mailArchiveService);
+        factory.setMessages(i18nMessages);
+
 
         when(serverConfigurationService.getBoolean("smtp.enabled", false)).thenReturn(true);
         when(serverConfigurationService.getServerName()).thenReturn("example.com");
@@ -109,8 +124,6 @@ public class SakaiMessageHandlerTest {
         mockSite("siteId");
         mockAlias("siteId", "archive");
         MailArchiveChannel channel = mockChannel("siteId", SiteService.MAIN_CONTAINER);
-
-
         sendMessage("from@somewhere.com", "archive@example.com", "Subject", "Just a test");
 
         verify(channel).addMailArchiveMessage(eq("Subject"), eq("from@somewhere.com"), any(Time.class), any(List.class), any(List.class), any(String[].class));
@@ -165,7 +178,7 @@ public class SakaiMessageHandlerTest {
     }
 
     protected void sendMessage(String from, String to, String subject, String body) throws MessagingException {
-        Session session = Session.getDefaultInstance(props);
+        Session session = Session.getInstance(props);
         Message msg = new MimeMessage(session);
         msg.setFrom(new InternetAddress(from));
         msg.setRecipient(Message.RecipientType.TO, new InternetAddress(to));
